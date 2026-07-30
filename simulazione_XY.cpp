@@ -7,23 +7,27 @@
 #include <fstream>
 #include <numeric>
 
+#include <filesystem>
+#include <cstdio>
+
 // Ensure M_PI is available on MSVC if not provided by <cmath>
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
 using namespace std;
+namespace fs = std::filesystem;
 
 // ================= PARAMETRI =================
-const int sqrtN = 16;
+const int sqrtN = 128;
 double T = 1.5;
 const double T_min = 0.5;
-const int punti = 50;
+const double intervallo_T = 0.01;
 const bool Condizioni_al_bordo_periodiche = true;
 // ================= DEFINIZIONI BASE =================
 double beta_ = 1.0 / T;
 const int N = sqrtN * sqrtN;
-const double intervallo_T = (T - T_min) / (punti - 1);
+const int punti = (T - T_min) / intervallo_T;
 // ================= RANDOM =================
 std::mt19937 rng(std::random_device{}());
 std::uniform_real_distribution<double> uni01(0.0, 1.0);
@@ -80,35 +84,25 @@ double H_local(const Matrix& M, int i, int j) {
 
 double Ex_local(const Matrix& M, int i, int j) {
     double Ex = 0.0;
-    for (auto& s : Span) {
-        int di, dj; double dist;
-        tie(di, dj, dist) = s;
-        if ((0 <= i + di && i + di < sqrtN && 0 <= j + dj && j + dj < sqrtN) ||
-            Condizioni_al_bordo_periodiche) {
-            if (di == 0) { // asse x
-                int ni = pmod(i + di, sqrtN);
-                int nj = pmod(j + dj, sqrtN);
-                Ex += cos(M[i][j] - M[ni][nj]);
-            }
-        }
+    if ((j < sqrtN) ||
+        Condizioni_al_bordo_periodiche) {
+        Ex = sin(M[i][j] - M[i][pmod(j + 1, sqrtN)]);
     }
-    return Ex;
+    else {
+        Ex = 0;
+    }
+       return Ex;
 }
 
 double Ix_local(const Matrix& M, int i, int j) {
     double Ix = 0.0;
-    for (auto& s : Span) {
-        int di, dj; double dist;
-        tie(di, dj, dist) = s;
-        if ((0 <= i + di && i + di < sqrtN && 0 <= j + dj && j + dj < sqrtN) ||
-            Condizioni_al_bordo_periodiche) {
-            if (di == 0) { // asse x
-                int ni = pmod(i + di, sqrtN);
-                int nj = pmod(j + dj, sqrtN);
-                Ix += sin(M[i][j] - M[ni][nj]);
-            }
-        }
+    if ((j < sqrtN) ||
+        Condizioni_al_bordo_periodiche) {
+        Ix = sin(M[i][j] - M[i][pmod(j + 1, sqrtN)]);
     }
+	else {
+		Ix = 0;
+	}
     return Ix;
 }
 
@@ -125,7 +119,7 @@ double Ix_tot(const Matrix& M) {
     for (int i = 0; i < sqrtN; i++)
         for (int j = 0; j < sqrtN; j++)
             Ix += Ix_local(M, i, j);
-    return Ix / 2.0;
+    return Ix;
 }
 
 double Ex_tot(const Matrix& M) {
@@ -133,8 +127,40 @@ double Ex_tot(const Matrix& M) {
     for (int i = 0; i < sqrtN; i++)
         for (int j = 0; j < sqrtN; j++)
             Ex += Ex_local(M, i, j);
-    return Ex / 2.0;
+    return Ex;
 }
+// ================= CHECKPOINT (salvataggio/caricamento matrice per T) =================
+const string cartella_matrici = "matrici";
+
+// Costruisce il nome file associato a una temperatura, es. T=1.23 -> "matrici/matrice_T1.23.txt"
+string matrixFilename(double T) {
+    if (fabs(T) < 1e-9) T = 0.0; // evita il caso "-0.00"
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s/matrice_T%.2f.txt", cartella_matrici.c_str(), T);
+    return string(buf);
+}
+
+void saveMatrix(const Matrix& M, const string& filename) {
+    ofstream out(filename);
+    for (int i = 0; i < sqrtN; i++) {
+        for (int j = 0; j < sqrtN; j++) {
+            out << M[i][j];
+            if (j < sqrtN - 1) out << " ";
+        }
+        out << "\n";
+    }
+}
+
+bool loadMatrix(Matrix& M, const string& filename) {
+    ifstream in(filename);
+    if (!in.is_open()) return false;
+    for (int i = 0; i < sqrtN; i++)
+        for (int j = 0; j < sqrtN; j++)
+            if (!(in >> M[i][j])) return false;
+    return true;
+}
+
+// ================= SIMULAZIONE =================
 
 template<typename... Args>
 void print(const Args&... args) {
@@ -143,6 +169,7 @@ void print(const Args&... args) {
 
 int main() {
     Span = buildSpan(raggio_pv);
+    fs::create_directories(cartella_matrici);
 
     // stampa lo Span, come il print(Span) del codice Python originale
     cout << "Span: ";
@@ -167,6 +194,15 @@ int main() {
 
     // PUNTI DEL GRAFICO (temperatura decrescente)
     for (int i = 0; i < punti; i++) {
+        string filename = matrixFilename(T);
+
+        if (loadMatrix(M, filename)) {
+            cout << "T=" << T << ": trovata matrice salvata, la carico e continuo la simulazione." << endl;
+        }
+        else {
+            cout << "T=" << T << ": nessuna matrice salvata, parto da quella corrente." << endl;
+        }
+
         double E = H_tot(M);
         double Ix = Ix_tot(M);
         double Ex = Ex_tot(M);
@@ -217,9 +253,9 @@ int main() {
             // si iniziano a prendere le misure dopo il primo 90% dei passi
             if (passo - step <= 0.1 * passi) {
                 if (cooldown_ >= cooldown) {
-                    E_mean = E;
-                    Ix_mean = Ix;
-                    rho_s_mean = rho_s;
+                    E_mean = E_mean + E;
+                    Ix_mean = Ix_mean + Ix;
+                    rho_s_mean = rho_s_mean + rho_s;
                     counter_mean++;
                     cooldown_ = 0;
                 }
@@ -234,8 +270,11 @@ int main() {
         list_Ix.push_back(Ix_mean / (counter_mean * N));
         list_rho_s.push_back(rho_s_mean / counter_mean );
         print(counter_mean);
+        print(H_tot(M)/N);
+        print(Ix_tot(M)/N);
         counter_mean = 0;
         list_T.push_back(T);
+        saveMatrix(M, filename);
     }
 
     // salvataggio risultati su CSV (al posto dei grafici)
@@ -249,6 +288,5 @@ int main() {
     cout << "Simulazione completata. Risultati salvati in risultati_xy.csv" << endl;
 
     return 0;
-
 
 }
