@@ -123,13 +123,13 @@ void dynamics(Matrix& M)
 // ================= MICROSTATO =================
 double Ex_local(const Matrix& M, int i, int j) {
     double Ex = 0.0;
-    Ex = cos(M[i][j] - M[i][j + 1 % L]);
+    Ex = cos(M[i][j] - M[i][(j + 1) % L]);
     return Ex;
 }
 
 double Ix_local(const Matrix& M, int i, int j) {
     double Ix = 0.0;
-    Ix = sin(M[i][j] - M[i][j + 1 % L]);
+    Ix = sin(M[i][j] - M[i][(j + 1) % L]);
     return Ix;
 }
 
@@ -233,7 +233,7 @@ int main() {
 
 
             // MISURE
-            if (step % N) {
+            if (step % N == 0) {
                 double E = H_tot(M);
                 double Ix = Ix_tot(M);
                 double Ex = Ex_tot(M);
