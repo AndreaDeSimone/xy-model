@@ -19,28 +19,33 @@ using namespace std;
 namespace fs = std::filesystem;
 
 // ================= PARAMETRI =================
-const int sqrtN = 128;
+const int L = 16;
 double T = 1.5;
-const double T_min = 0.5;
-const double intervallo_T = 0.01;
-const bool Condizioni_al_bordo_periodiche = true;
+const double T_min = 0.1;
+const double intervallo_T = 0.1;
 // ================= DEFINIZIONI BASE =================
 double beta_ = 1.0 / T;
-const int N = sqrtN * sqrtN;
+const int N = L * L;
 const int punti = (T - T_min) / intervallo_T;
 // ================= RANDOM =================
 std::mt19937 rng(std::random_device{}());
 std::uniform_real_distribution<double> uni01(0.0, 1.0);
-std::normal_distribution<double> gauss(0.0, 1.0);
-std::uniform_int_distribution<int> site_dist(0, sqrtN - 1);
+std::uniform_real_distribution<double> uni_angle(0.0, 2.0 * M_PI);
+std::uniform_int_distribution<int> site_dist(0, L - 1);
 
 using Matrix = vector<vector<double>>;
 
+/* NEL CASO MALSANO CI VENISSE IN MENTE DI CAMBIARE LA DINAMICA
 // ================= INTERAZIONE =================
+vector<tuple<int, int, double>> Span;
 const int raggio_pv = 1;
 
 double metrica(int i, int j) {
     return sqrt(static_cast<double>(i * i + j * j));
+}
+// modulo sempre non-negativo (equivalente al comportamento di % in Python)
+inline int pmod(int a, int m) {
+    return ((a % m) + m) % m;
 }
 
 // Trova le posizioni dei vicini entro una certa distanza (analogo di Span() in Python)
@@ -57,95 +62,112 @@ vector<tuple<int, int, double>> buildSpan(int raggio_pv) {
     return lista;
 }
 
-vector<tuple<int, int, double>> Span;
-
-// modulo sempre non-negativo (equivalente al comportamento di % in Python)
-inline int pmod(int a, int m) {
-    return ((a % m) + m) % m;
-}
-
-// ================= DINAMICA =================
+vector<tuple<int, int, double>>
 double H_local(const Matrix& M, int i, int j) {
     double H = 0.0;
     for (auto& s : Span) {
         int di, dj; double dist;
         tie(di, dj, dist) = s;
-        // NB: questa condizione è sempre vera perché Condizioni_al_bordo_periodiche == true
-        // (esattamente come nel codice Python originale, dove "or True" annulla il controllo)
-        if ((0 <= i + di && i + di < sqrtN && 0 <= j + dj && j + dj < sqrtN) ||
-            Condizioni_al_bordo_periodiche) {
-            int ni = pmod(i + di, sqrtN);
-            int nj = pmod(j + dj, sqrtN);
-            H += -cos(M[i][j] - M[ni][nj]);
+        int ni = pmod(i + di, L);
+        int nj = pmod(j + dj, L);
+        H += -cos(M[i][j] - M[ni][nj]);
         }
     }
     return H;
 }
+*/
 
-double Ex_local(const Matrix& M, int i, int j) {
-    double Ex = 0.0;
-    if ((j < sqrtN) ||
-        Condizioni_al_bordo_periodiche) {
-        Ex = sin(M[i][j] - M[i][pmod(j + 1, sqrtN)]);
-    }
-    else {
-        Ex = 0;
-    }
-       return Ex;
-}
+const int di[] = { 1, -1,  0,  0 };
+const int dj[] = { 0,  0,  1, -1 };
 
-double Ix_local(const Matrix& M, int i, int j) {
-    double Ix = 0.0;
-    if ((j < sqrtN) ||
-        Condizioni_al_bordo_periodiche) {
-        Ix = sin(M[i][j] - M[i][pmod(j + 1, sqrtN)]);
+// ================= DINAMICA =================
+double H_local(const Matrix& M, int i, int j, double phi_2) {
+    double H = 0.0;
+
+    for (int m = 0; m < 4; m++)
+    {
+        int ni = (i + di[m] + L) % L;
+        int nj = (j + dj[m] + L) % L;
+
+        H += -cos(phi_2 - M[ni][nj]);
     }
-	else {
-		Ix = 0;
-	}
-    return Ix;
+
+    return H;
 }
 
 double H_tot(const Matrix& M) {
     double H = 0.0;
-    for (int i = 0; i < sqrtN; i++)
-        for (int j = 0; j < sqrtN; j++)
-            H += H_local(M, i, j);
+    for (int i = 0; i < L; i++)
+        for (int j = 0; j < L; j++)
+            H += H_local(M, i, j, M[i][j]);
     return H / 4.0;
+}
+
+void dynamics(Matrix& M)
+{
+    // Estrai a caso un sito tra 0 e L-1
+    int wi = site_dist(rng);
+    int wj = site_dist(rng);
+
+    // Nuovo angolo tra [0, 2pi)
+    double phi_2 = uni_angle(rng);
+    double phi_1 = M[wi][wj];
+    double delta_E = H_local(M, wi, wj, phi_2) - H_local(M, wi, wj, phi_1);
+
+    // Algoritmo di Metropolis (Bilancio dettagliato)
+    if (delta_E <= 0.0 || uni01(rng) < exp(-beta_ * delta_E)) {
+        M[wi][wj] = phi_2;
+    }
+}
+
+// ================= MICROSTATO =================
+double Ex_local(const Matrix& M, int i, int j) {
+    double Ex = 0.0;
+    Ex = cos(M[i][j] - M[i][j + 1 % L]);
+    return Ex;
+}
+
+double Ix_local(const Matrix& M, int i, int j) {
+    double Ix = 0.0;
+    Ix = sin(M[i][j] - M[i][j + 1 % L]);
+    return Ix;
 }
 
 double Ix_tot(const Matrix& M) {
     double Ix = 0.0;
-    for (int i = 0; i < sqrtN; i++)
-        for (int j = 0; j < sqrtN; j++)
+    for (int i = 0; i < L; i++)
+        for (int j = 0; j < L; j++)
             Ix += Ix_local(M, i, j);
     return Ix;
 }
 
 double Ex_tot(const Matrix& M) {
     double Ex = 0.0;
-    for (int i = 0; i < sqrtN; i++)
-        for (int j = 0; j < sqrtN; j++)
+    for (int i = 0; i < L; i++)
+        for (int j = 0; j < L; j++)
             Ex += Ex_local(M, i, j);
     return Ex;
 }
+
 // ================= CHECKPOINT (salvataggio/caricamento matrice per T) =================
-const string cartella_matrici = "matrici";
+string cartellaMatrici() {
+    return "matrici_L" + to_string(L);
+}
 
 // Costruisce il nome file associato a una temperatura, es. T=1.23 -> "matrici/matrice_T1.23.txt"
 string matrixFilename(double T) {
     if (fabs(T) < 1e-9) T = 0.0; // evita il caso "-0.00"
     char buf[128];
-    snprintf(buf, sizeof(buf), "%s/matrice_T%.2f.txt", cartella_matrici.c_str(), T);
+    snprintf(buf, sizeof(buf), "%s/matrice_T%.2f.txt", cartellaMatrici().c_str(), T);
     return string(buf);
 }
 
 void saveMatrix(const Matrix& M, const string& filename) {
     ofstream out(filename);
-    for (int i = 0; i < sqrtN; i++) {
-        for (int j = 0; j < sqrtN; j++) {
+    for (int i = 0; i < L; i++) {
+        for (int j = 0; j < L; j++) {
             out << M[i][j];
-            if (j < sqrtN - 1) out << " ";
+            if (j < L - 1) out << " ";
         }
         out << "\n";
     }
@@ -154,8 +176,8 @@ void saveMatrix(const Matrix& M, const string& filename) {
 bool loadMatrix(Matrix& M, const string& filename) {
     ifstream in(filename);
     if (!in.is_open()) return false;
-    for (int i = 0; i < sqrtN; i++)
-        for (int j = 0; j < sqrtN; j++)
+    for (int i = 0; i < L; i++)
+        for (int j = 0; j < L; j++)
             if (!(in >> M[i][j])) return false;
     return true;
 }
@@ -168,27 +190,13 @@ void print(const Args&... args) {
 }
 
 int main() {
-    Span = buildSpan(raggio_pv);
-    fs::create_directories(cartella_matrici);
-
-    // stampa lo Span, come il print(Span) del codice Python originale
-    cout << "Span: ";
-    for (auto& s : Span) {
-        int di, dj; double dist;
-        tie(di, dj, dist) = s;
-        cout << "(" << di << ", " << dj << ", " << dist << ") ";
-    }
-    cout << endl;
+    fs::create_directories(cartellaMatrici());  // crea "matrici_L128" se non esiste
 
     // generazione di una matrice casuale iniziale
-    Matrix M(sqrtN, vector<double>(sqrtN));
-    for (int i = 0; i < sqrtN; i++)
-        for (int j = 0; j < sqrtN; j++)
+    Matrix M(L, vector<double>(L));
+    for (int i = 0; i < L; i++)
+        for (int j = 0; j < L; j++)
             M[i][j] = 2 * M_PI * uni01(rng);
-
-    const int passi = 50000;
-    const int passo_iniziale = 20 * passi;
-    const int cooldown = 10;
 
     vector<double> list_E, list_Ix, list_Ex, list_rho_s, list_T;
 
@@ -201,67 +209,39 @@ int main() {
         }
         else {
             cout << "T=" << T << ": nessuna matrice salvata, parto da quella corrente." << endl;
+            long long mc_1step = (long long)N * 1e4;
+            for (long long step = 0; step < mc_1step; step++) {
+                dynamics(M);
+            }
         }
-
-        double E = H_tot(M);
-        double Ix = Ix_tot(M);
-        double Ex = Ex_tot(M);
-
         double E_mean = 0.0;
         double Ix_mean = 0.0;
         double rho_s_mean = 0.0;
         int counter_mean = 0;
+ 
 
         T = T - intervallo_T;
         beta_ = 1.0 / T;
         cout << i << endl;
 
-        int passo = (i == 0) ? passo_iniziale : passi;
-
         int cooldown_ = 0;
 
         // STEP MONTECARLO
-        for (int step = 0; step < passo; step++) {
-            int wi = site_dist(rng);
-            int wj = site_dist(rng);
+        long long mc_step = (long long)N * 1e4;
+        for (long long step = 0; step < mc_step; step++) {
+            dynamics(M);
 
-            // spostamento casuale dell'angolo nel sito scelto
-            double x = sqrt(M_PI) * gauss(rng) / 2.0;
 
-            Matrix M_new = M; // solo il sito (wi,wj) verrà modificato
-            double val = fmod(M[wi][wj] + x, 2 * M_PI);
-            if (val < 0) val += 2 * M_PI;
-            M_new[wi][wj] = val;
-
-            double delta_E = H_local(M_new, wi, wj) - H_local(M, wi, wj);
-
-            // Bilancio dettagliato
-            if (delta_E <= 0 || uni01(rng) < exp(-beta_ * delta_E)) {
-                double old_Ix_local = Ix_local(M, wi, wj);
-                double old_term_for_Ex = Ex_local(M, wi, wj);
-                double new_Ix_local = Ix_local(M_new, wi, wj);
-                double new_Ex_local = Ex_local(M_new, wi, wj);
-
-                M = M_new;
-                E = E + delta_E;
-                Ix = Ix + new_Ix_local - old_Ix_local;
-                Ex = Ex + new_Ex_local - old_term_for_Ex;
-            }
-
-            double rho_s = (Ex - beta_ * (Ix * Ix)) / N;
-
-            // si iniziano a prendere le misure dopo il primo 90% dei passi
-            if (passo - step <= 0.1 * passi) {
-                if (cooldown_ >= cooldown) {
-                    E_mean = E_mean + E;
-                    Ix_mean = Ix_mean + Ix;
-                    rho_s_mean = rho_s_mean + rho_s;
-                    counter_mean++;
-                    cooldown_ = 0;
-                }
-                else {
-                    cooldown_++;
-                }
+            // MISURE
+            if (step % N) {
+                double E = H_tot(M);
+                double Ix = Ix_tot(M);
+                double Ex = Ex_tot(M);
+                double rho_s = (Ex - beta_ * (Ix * Ix)) / N;
+                E_mean = E_mean + E;
+                Ix_mean = Ix_mean + Ix;
+                rho_s_mean = rho_s_mean + rho_s;
+                counter_mean++;
             }
         }
 
@@ -272,6 +252,7 @@ int main() {
         print(counter_mean);
         print(H_tot(M)/N);
         print(Ix_tot(M)/N);
+        print(rho_s_mean / counter_mean);
         counter_mean = 0;
         list_T.push_back(T);
         saveMatrix(M, filename);
